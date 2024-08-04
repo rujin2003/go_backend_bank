@@ -30,15 +30,16 @@ func (s *Apiserver) Run() {
 	router.Handle("/login", makeHandler(s.handleLogin)).Methods("POST")
 
 	router.HandleFunc("/account/users", makeHandler(s.handleGetUsers)).Methods("GET")
-	router.HandleFunc("/account/{id}", makeHandler(s.handleGetAccountById)).Methods("GET", "DELETE")
+	router.HandleFunc("/account/{id}", ProtectedHandler(s.handleGetAccountById)).Methods("GET", "DELETE")
 	router.HandleFunc("/account/create", makeHandler(s.handleCreateAccount)).Methods("POST")
-	router.HandleFunc("/account/delete", makeHandler(s.handleDeleteAccount)).Methods("DELETE")
+
 	router.HandleFunc("/transfer", makeHandler(s.handleTransfer)).Methods("POST")
 
 	http.ListenAndServe(s.listenAddress, router)
 }
 
 func (s *Apiserver) handleLogin(w http.ResponseWriter, r *http.Request) error {
+
 	loginRequest := LoginRequest{}
 	if err := json.NewDecoder(r.Body).Decode(&loginRequest); err != nil {
 		return err
@@ -47,7 +48,15 @@ func (s *Apiserver) handleLogin(w http.ResponseWriter, r *http.Request) error {
 	err := s.store.CheckAuth(loginRequest.Email, loginRequest.Password)
 
 	if err != nil {
+
 		return writeJSON(w, http.StatusUnauthorized, ApiError{Error: err.Error()})
+	} else {
+		tokenString, JWTerr := CreateToken(loginRequest.Email)
+		if JWTerr != nil {
+			fmt.Print("No username found")
+		}
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, tokenString)
 	}
 
 	return writeJSON(w, http.StatusOK, map[string]string{"message": "login successful"})
@@ -150,6 +159,31 @@ type ApiError struct {
 // makeHandler wraps an apiFunc and converts it to an http.HandlerFunc.
 func makeHandler(fn apiFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if err := fn(w, r); err != nil {
+			writeJSON(w, http.StatusBadRequest, ApiError{Error: err.Error()})
+		}
+	}
+
+}
+
+func ProtectedHandler(fn apiFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		authHeader := r.Header.Get("Authorization")
+		if authHeader == "" {
+			w.WriteHeader(http.StatusUnauthorized)
+			fmt.Fprint(w, "Missing authorization header")
+			return
+		}
+		tokenString := authHeader[len("Bearer "):]
+
+		err := verifyToken(tokenString)
+		if err != nil {
+			w.WriteHeader(http.StatusUnauthorized)
+			fmt.Fprintf(w, "Invalid token: %v", err)
+			return
+		}
+
 		if err := fn(w, r); err != nil {
 			writeJSON(w, http.StatusBadRequest, ApiError{Error: err.Error()})
 		}
